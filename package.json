@@ -1,0 +1,37 @@
+{
+  "name": "lab-local-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "local-server.js",
+  "engines": {
+    "node": "18.12.1"
+  },
+  "config": {
+    "laboratoryId": "laboratoryId",
+    "password": "laboratoryPassword",
+    "port": 3000,
+    "dev": {
+      "remoteServer": "http://localhost:5000",
+      "websocketServer": "ws://localhost:5000"
+    },
+    "production": {
+      "remoteServer": "http://localhost:5000",
+      "websocketServer": "ws://localhost:5000"
+    }
+  },
+  "scripts": {
+    "start-dev": "start http://localhost:%npm_package_config_port% && node local-server %npm_package_config_dev_remoteServer% %npm_package_config_dev_websocketServer% %npm_package_config_laboratoryId% %npm_package_config_password% %npm_package_config_port%",
+    "start-prod": "start http://localhost:%npm_package_config_port% && node local-server %npm_package_config_production_remoteServer% %npm_package_config_production_websocketServer% %npm_package_config_laboratoryId% %npm_package_config_password%  %npm_package_config_port%"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^0.26.1",
+    "cors": "^2.8.5",
+    "express": "^4.17.1",
+    "getusermedia": "^2.0.1",
+    "media-devices": "^0.4.0",
+    "save": "^2.4.0",
+    "ws": "^8.5.0"
+  }
+}

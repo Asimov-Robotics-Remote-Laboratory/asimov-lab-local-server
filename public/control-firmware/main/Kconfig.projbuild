@@ -1,0 +1,49 @@
+menu "Asimov Lab Configuration"
+config WIFI_SSID
+    string "WiFi SSID"
+    default ""
+    help
+	SSID (network name) for the example to connect to.
+
+config WIFI_PASSWORD
+    string "WiFi Password"
+    default ""
+    help
+	WiFi password (WPA or WPA2) for the example to use.
+
+config LABORATORY_ID
+    string "Laboratory ID"
+    default "laboratoryId"
+    help
+	Id do laboratório
+
+config LABORATORY_PASSWORD
+    string "Laboratory Password"
+    default "laboratoryPassword"
+    help
+	Password do laboratório
+	
+config WS_URL
+	string "Remote Websocket Server URL"
+    default "ws://localhost:80"
+    help
+	URL do servidor Websocket remoto	
+
+config REMOTE_SERVER_URL
+	string "Remote HTTP Server URL"
+    default "http://localhost:80"
+    help
+	URL do servidor HTTP remoto
+
+config AUTHENTICATION_SERVICE_URL
+	string "Authentication Service URL"
+    default "http://localhost:80/ws/laboratory/authenticate"
+    help
+	URL do serviço de autenticação
+
+config NEW_FIRMWARE_SERVICE_URL
+	string "New Firmware Service URL"
+    default "http://0.0.0.0:3001/newfirmware"
+    help
+	URL do serviço de novo firmware
+endmenu

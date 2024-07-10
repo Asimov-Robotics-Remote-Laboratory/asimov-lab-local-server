@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <title>Web RTC</title>
+</head>
+<body>
+    <nav class="navbar bg-body-tertiary b">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1">Asimov Lab - Câmera Interface</span>
+        </div>
+    </nav>
+    <div class="container" style="margin-top: 20px">
+        <div class="row">
+            <div class="col">
+                <div class="mb-3">
+                    <label for="laboratoryId" class="form-label"> ID do Laboratório: </label>
+                    <input class="form-control" type="text" id="laboratoryId" name="laboratoryId"/>
+                </div>
+                <div class="mb-3">
+                    <label for="password" class="form-label"> Senha do Laboratório: </label>
+                    <input class="form-control" type="password" id="password" name="password"/>
+                </div>
+            </div>
+
+            <div class="mb-3" >
+                <div class="mb-3">
+                    <label for="cameras" class="form-label">Câmera: </label>
+                    <select class="form-select" name="cameras" id="cameras" onchange="onChangeCamera()">
+                        <option value="-1">Selecione</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <div class="col" >
+                        <div class="row">
+                            <div class="col">
+                                <label class="form-label">Preview:</label>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col">
+                                <video style="border: 1px; border-style: solid;" height="218" width="290" id="videoPreview" autoplay playsinline controls>
+                                </video>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-primary" onclick="authenticate()">Compartilhar Câmera</button>
+                    </div>
+                    <div class="col border border-top-0 border border-end-0 border border-bottom-0">
+                        <div>
+                            <label for="logs" class="form-label">Logs: </label>
+                            <textarea id="logs" name="logs" class="form-control" aria-label="With textarea" style="height: 250px"></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL"
+        crossorigin="anonymous"></script>
+<script>
+    const states = {
+        INITIAL: 'INITIAL',
+        AUTHENTICATING: 'AUTHENTICATING',
+        AUTHENTICATED: 'AUTHENTICATED',
+        AUTHENTICATION_FAILED: 'AUTHENTICATION_FAILED',
+        WEBSOCKET_CONNECTING:'WEBSOCKET_CONNECTING',
+        WEBSOCKET_CONNECTED:'WEBSOCKET_CONNECTED',
+        WEBSOCKET_CONNECTION_FAILED: 'WEBSOCKET_CONNECTION_FAILED',
+        JOIN_LABORATORY_OK: 'JOIN_LABORATORY_OK',
+        SHARING_CAM: 'SHARING_CAM',
+        SHARING_CAM_FAILED: 'SHARING_CAM_FAILED'
+    };
+
+    const timeoutReconnect = 10000;
+    const logs = [];
+
+    let peerConnection;
+    let socket;
+    let userMedia;
+    let state = states.INITIAL;
+    let timeoutHandler;
+    let remoteServerURL = "http://localhost:5000";
+    let websocketServerURL = "ws://localhost:5000";
+    let laboratoryId;
+    let password;
+    let token;
+
+    let iceServers = [
+        {urls: 'stun:stun.l.google.com:19302'}
+    ];
+
+    window.onload = async () => {
+        async function getRemoteServerData() {
+            try {
+                let response = await fetch(document.location.href + "remote-server-data");
+                let body = await response.json();
+                laboratoryId = body.laboratoryId;
+                password = body.password;
+                remoteServerURL = body.remoteServerURL;
+                websocketServerURL = body.websocketServerURL;
+                document.getElementById("laboratoryId").value = laboratoryId;
+                document.getElementById("password").value = password;
+            } catch (err) {
+                throw (err);
+            }
+        }
+        async function listDevices() {
+            let devices = await navigator.mediaDevices.enumerateDevices();
+            for (let i in devices) {
+                if (devices[i] && devices[i].kind === 'videoinput') {
+                    document.getElementById("cameras").innerHTML += `<option value="${devices[i].deviceId}">${devices[i].label}</option>`;
+                }
+            }
+        }
+
+        async function authenticate() {
+            laboratoryId = document.getElementById("laboratoryId").value;
+            password = document.getElementById("password").value;
+            await stopPreviewStream();
+            try {
+                changeState(states.AUTHENTICATING);
+                let response = await fetch(remoteServerURL + "/ws/laboratory/authenticate", {
+                    method: "POST",
+                    body: JSON.stringify({laboratoryId: laboratoryId, password: password, role: "CAMERA"}),
+                    headers: {"Content-type": "application/json"}
+                });
+                let body = await response.json();
+                if(!body.token){
+                    throw body;
+                }
+                token = body.token;
+                changeState(states.AUTHENTICATED);
+                await startWebSocketConnection();
+            } catch (ex) {
+                changeState(states.AUTHENTICATION_FAILED);
+                if(ex.errors && ex.errors.length > 0){
+                    for(let i = 0; i < ex.errors.length; i++){
+                        updateStatusMessage(ex.errors[i].msg);
+                    }
+                }
+            }
+        }
+
+        async function stopPreviewStream() {
+            if (userMedia) {
+                userMedia.getTracks().forEach(t => {
+                    t.stop();
+                });
+            }
+        }
+
+        async function onChangeCamera() {
+            await stopPreviewStream();
+            const deviceId = await getDeviceId();
+            const userMediaOptions =  {
+                audio: false,
+                video: {deviceId: deviceId}
+            }
+            const videoPreview = await document.querySelector('#videoPreview');
+            videoPreview.srcObject = await navigator.mediaDevices.getUserMedia(userMediaOptions);
+            if(socket && socket.readyState === 1) {
+                socket.send(
+                    JSON.stringify({
+                        messageType: "NEW_CAMERA_STREAM",
+                        role: "CAMERA",
+                        token: token,
+                        laboratoryId: laboratoryId
+                    })
+                );
+            }
+        }
+
+        async function startWebSocketConnection() {
+            changeState(states.WEBSOCKET_CONNECTING)
+            socket = new WebSocket(websocketServerURL);
+            socket.onopen = onOpen;
+            socket.onclose = onClose;
+            socket.onmessage = onMessage;
+            socket.onerror = onError;
+        }
+
+        async function onOpen(){
+            changeState(states.WEBSOCKET_CONNECTED)
+            await socket.send(JSON.stringify({
+                messageType: "JOIN_LABORATORY",
+                role: "CAMERA",
+                laboratoryId: laboratoryId,
+                token: token
+            }));
+        }
+        async function onClose(){
+            if (timeoutHandler) {
+                clearTimeout(timeoutHandler);
+            }
+            timeoutHandler = setTimeout(async function () {
+                await startWebSocketConnection();
+            }, timeoutReconnect);
+        }
+
+        async function onMessage(message){
+            const data = JSON.parse(message.data);
+            switch (data.messageType) {
+                case 'JOIN_LABORATORY_OK':
+                    await onJoinLaboratoryOk();
+                    break;
+                case 'REQ_REMOTE_DESCRIPTION':
+                    await onReqRemoteDescription();
+                    break;
+                case 'ANSWER':
+                    await onAnswer(data.message);
+                    break;
+                case 'CANDIDATE': {
+                    await onCandidate(data.message);
+                    break;
+                }
+            }
+        }
+
+        async function onError(err){
+            changeState(states.WEBSOCKET_CONNECTION_FAILED);
+        }
+
+        async function onJoinLaboratoryOk(){
+            changeState(states.JOIN_LABORATORY_OK);
+            socket.send(
+                JSON.stringify({
+                    messageType: "NEW_CAMERA_STREAM",
+                    role: "CAMERA",
+                    token: token,
+                    laboratoryId: laboratoryId
+                })
+            );
+        }
+
+        async function onReqRemoteDescription(){
+            if(peerConnection){
+                await peerConnection.close();
+            }
+            peerConnection = await createPeerConnection();
+            const deviceId = await getDeviceId();
+            await prepareTracks(deviceId);
+            const localDescription = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(localDescription);
+            socket.send(
+                JSON.stringify({
+                    messageType: "OFFER",
+                    role: "CAMERA",
+                    token: token,
+                    laboratoryId: laboratoryId,
+                    message: localDescription
+                })
+            );
+            changeState(states.SHARING_CAM);
+        }
+        async function onAnswer(data){
+            await peerConnection.setRemoteDescription(data);
+        }
+
+        async function onCandidate(data){
+            await peerConnection.addIceCandidate(data);
+        }
+
+        async function createPeerConnection(){
+            peerConnection = await new RTCPeerConnection({
+                iceServers: iceServers,
+                iceCandidatePoolSize : 10,
+                iceTransportPolicy: "all"
+            });
+
+            peerConnection.oniceconnectionstatechange = () =>{
+                if (peerConnection.iceConnectionState === "failed") {
+                    peerConnection.restartIce();
+                }
+            }
+
+            peerConnection.onicecandidate = (candidate) => {
+                if (candidate.candidate) {
+                    socket.send(JSON.stringify({
+                        messageType: "CANDIDATE",
+                        role: "CAMERA",
+                        token: token,
+                        laboratoryId: laboratoryId,
+                        message: candidate.candidate
+                    }));
+                }
+            }
+            return peerConnection;
+        }
+
+        async function prepareTracks(deviceId){
+            const userMediaOptions =  {
+                audio: false,
+                video: {deviceId: deviceId}
+            }
+            const videoPreview = await document.querySelector('#videoPreview');
+            userMedia = await navigator.mediaDevices.getUserMedia(userMediaOptions);
+            videoPreview.srcObject = userMedia;
+            await userMedia.getTracks().forEach(t => {
+                peerConnection.addTrack(t, userMedia);
+            });
+        }
+
+        async function getDeviceId(){
+            const deviceId = await document.getElementById('cameras').value;
+            if(!deviceId || deviceId === "-1"){
+                changeState(states.SHARING_CAM_FAILED);
+                updateStatusMessage("Selecione uma câmera.");
+            }
+            return deviceId;
+        }
+
+        function changeState(newState) {
+            state = newState;
+            switch (state) {
+                case states.AUTHENTICATING:
+                    updateStatusMessage("Autenticando...");
+                    break;
+                case states.AUTHENTICATION_FAILED:
+                    updateStatusMessage("Falha na autenticação.");
+                    break;
+                case states.AUTHENTICATED:
+                    updateStatusMessage("Autenticando.");
+                    break;
+                case states.WEBSOCKET_CONNECTING:
+                    updateStatusMessage("Conectando ao servidor websocket...");
+                    break;
+                case states.WEBSOCKET_CONNECTED:
+                    updateStatusMessage("Conectado ao servidor websocket.");
+                    break;
+                case states.WEBSOCKET_CONNECTION_FAILED:
+                    updateStatusMessage("Falha na conexão com o servidor websocket.");
+                    break;
+                case states.JOIN_LABORATORY_OK:
+                    updateStatusMessage("Conectado ao laboratório.");
+                    break;
+                case states.SHARING_CAM:
+                    updateStatusMessage("Compartilhando câmera....");
+                    break;
+                case states.SHARING_CAM_FAILED:
+                    updateStatusMessage("Falha no compartilhamento de câmera.");
+                    break;
+            }
+        }
+        function updateStatusMessage(statusMessage) {
+            const now = new Date();
+            logs.push({statusMessage: statusMessage, date: formateDate(now)});
+            document.getElementById("logs").value += `${logs.at(-1).date} - ${logs.at(-1).statusMessage} \n`
+            document.getElementById("logs").scrollTop = document.getElementById("logs").scrollHeight
+        }
+        function formateDate(date){
+            const year = date.getFullYear();
+            let month = date.getMonth()+1;
+            let day = date.getDate();
+            let hour = date.getHours();
+            let minutes = date.getMinutes();
+            let seconds = date.getSeconds();
+            if (day < 10) {
+                day = '0' + day;
+            }
+            if (month < 10) {
+                month = `0${month}`;
+            }
+            if (hour < 10) {
+                hour = `0${hour}`;
+            }
+            if (minutes < 10) {
+                minutes = `0${minutes}`;
+            }
+            if (seconds < 10) {
+                seconds = `0${seconds}`;
+            }
+            return `[${day}/${month}/${year}] [${hour}:${minutes}:${seconds}]`;
+        }
+
+        await listDevices();
+        await getRemoteServerData();
+        window.authenticate = authenticate;
+        window.onChangeCamera = onChangeCamera;
+    }
+</script>
+</html>
